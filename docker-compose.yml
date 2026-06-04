@@ -1,0 +1,451 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # INFRASTRUCTURE
+  # ==========================================
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: banking-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - banking-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: banking-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - banking-network
+
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: banking-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "BankingSystemKafkaCluster01"
+    ports:
+      - "9094:9094"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - banking-network
+
+  zipkin:
+    image: openzipkin/zipkin:latest
+    container_name: banking-zipkin
+    ports:
+      - "9411:9411"
+    networks:
+      - banking-network
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: banking-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@nexbank.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin123}
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  # ==========================================
+  # INFRASTRUCTURE SERVICES
+  # ==========================================
+
+  discovery-server:
+    build: ./discovery-server
+    container_name: banking-discovery-server
+    ports:
+      - "${EUREKA_PORT}:${EUREKA_PORT}"
+    environment:
+      SERVER_PORT: ${EUREKA_PORT}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${EUREKA_PORT}/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - banking-network
+
+  config-server:
+    build: ./config-server
+    container_name: banking-config-server
+    ports:
+      - "${CONFIG_SERVER_PORT}:${CONFIG_SERVER_PORT}"
+    environment:
+      SERVER_PORT: ${CONFIG_SERVER_PORT}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${CONFIG_SERVER_PORT}/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - banking-network
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: banking-api-gateway
+    ports:
+      - "${GATEWAY_PORT}:${GATEWAY_PORT}"
+    environment:
+      SERVER_PORT: ${GATEWAY_PORT}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST}
+      SPRING_DATA_REDIS_PORT: ${REDIS_PORT}
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  # ==========================================
+  # CORE SERVICES
+  # ==========================================
+
+  auth-service:
+    build: ./auth-service
+    container_name: banking-auth-service
+    ports:
+      - "${AUTH_SERVICE_PORT}:${AUTH_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${AUTH_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?currentSchema=auth_schema
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST}
+      SPRING_DATA_REDIS_PORT: ${REDIS_PORT}
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS}
+      JWT_REFRESH_EXPIRATION_MS: ${JWT_REFRESH_EXPIRATION_MS}
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  user-service:
+    build: ./user-service
+    container_name: banking-user-service
+    ports:
+      - "${USER_SERVICE_PORT}:${USER_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${USER_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?currentSchema=user_schema
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  account-service:
+    build: ./account-service
+    container_name: banking-account-service
+    ports:
+      - "${ACCOUNT_SERVICE_PORT}:${ACCOUNT_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${ACCOUNT_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?currentSchema=account_schema
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST}
+      SPRING_DATA_REDIS_PORT: ${REDIS_PORT}
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  transaction-service:
+    build: ./transaction-service
+    container_name: banking-transaction-service
+    ports:
+      - "${TRANSACTION_SERVICE_PORT}:${TRANSACTION_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${TRANSACTION_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?currentSchema=transaction_schema
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST}
+      SPRING_DATA_REDIS_PORT: ${REDIS_PORT}
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  ledger-service:
+    build: ./ledger-service
+    container_name: banking-ledger-service
+    ports:
+      - "${LEDGER_SERVICE_PORT}:${LEDGER_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${LEDGER_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?currentSchema=ledger_schema
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  upi-service:
+    build: ./upi-service
+    container_name: banking-upi-service
+    ports:
+      - "${UPI_SERVICE_PORT}:${UPI_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${UPI_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?currentSchema=upi_schema
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  currency-service:
+    build: ./currency-service
+    container_name: banking-currency-service
+    ports:
+      - "${CURRENCY_SERVICE_PORT}:${CURRENCY_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${CURRENCY_SERVICE_PORT}
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST}
+      SPRING_DATA_REDIS_PORT: ${REDIS_PORT}
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      EXCHANGE_RATE_API_KEY: ${EXCHANGE_RATE_API_KEY}
+      EXCHANGE_RATE_API_BASE_URL: ${EXCHANGE_RATE_API_BASE_URL}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      redis:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  fraud-service:
+    build: ./fraud-service
+    container_name: banking-fraud-service
+    ports:
+      - "${FRAUD_SERVICE_PORT}:${FRAUD_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${FRAUD_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?currentSchema=fraud_schema
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      FRAUD_LARGE_AMOUNT_THRESHOLD: ${FRAUD_LARGE_AMOUNT_THRESHOLD}
+      FRAUD_CROSS_CURRENCY_THRESHOLD: ${FRAUD_CROSS_CURRENCY_THRESHOLD}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  notification-service:
+    build: ./notification-service
+    container_name: banking-notification-service
+    ports:
+      - "${NOTIFICATION_SERVICE_PORT}:${NOTIFICATION_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${NOTIFICATION_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?currentSchema=notification_schema
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  audit-service:
+    build: ./audit-service
+    container_name: banking-audit-service
+    ports:
+      - "${AUDIT_SERVICE_PORT}:${AUDIT_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${AUDIT_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?currentSchema=audit_schema
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  admin-monitoring-service:
+    build: ./admin-monitoring-service
+    container_name: banking-admin-monitoring
+    ports:
+      - "${ADMIN_SERVICE_PORT}:${ADMIN_SERVICE_PORT}"
+    environment:
+      SERVER_PORT: ${ADMIN_SERVICE_PORT}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?currentSchema=admin_schema
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST}
+      SPRING_DATA_REDIS_PORT: ${REDIS_PORT}
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:${EUREKA_PORT}/eureka/
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://${ZIPKIN_HOST}:${ZIPKIN_PORT}/api/v2/spans
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+  # ==========================================
+  # FRONTEND
+  # ==========================================
+
+  frontend:
+    build: ./frontend
+    container_name: banking-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-gateway
+    networks:
+      - banking-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:
+
+networks:
+  banking-network:
+    driver: bridge

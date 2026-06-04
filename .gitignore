@@ -1,0 +1,136 @@
+# ============================================
+# NexBank - Digital Banking Platform .gitignore
+# ============================================
+
+# =====================
+# Java / Maven
+# =====================
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+*.zip
+*.tar.gz
+*.rar
+
+# =====================
+# Spring Boot
+# =====================
+*.log
+*.log.*
+spring-boot-devtools.properties
+
+# =====================
+# Node.js / Frontend
+# =====================
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.npm
+.yarn-integrity
+
+# =====================
+# IDE — IntelliJ IDEA
+# =====================
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+atlassian-ide-plugin.xml
+
+# =====================
+# IDE — Eclipse
+# =====================
+.classpath
+.project
+.settings/
+bin/
+*.factorypath
+
+# =====================
+# IDE — VS Code
+# =====================
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# =====================
+# IDE — NetBeans
+# =====================
+/nbproject/private/
+/nbbuild/
+/nbdist/
+/.nb-gradle/
+
+# =====================
+# OS Generated Files
+# =====================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# =====================
+# Credentials & Secrets
+# =====================
+CREDENTIALS.md
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+# =====================
+# Environment Variables
+# =====================
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# =====================
+# Docker Data Volumes
+# =====================
+postgres_data/
+redis_data/
+kafka_data/
+
+# =====================
+# Miscellaneous
+# =====================
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swp
+*.swo
+*~
+.cache/
+*.tmp
+*.bak
+*.orig
+hs_err_pid*
+replay_pid*
+
+# =====================
+# Gemini / AI Assistant
+# =====================
+.gemini/
