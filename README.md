@@ -745,19 +745,8 @@ docker-compose down -v
 4. Push to the branch: `git push origin feature/amazing-feature`
 5. Open a Pull Request
 
-### Code Style
-- **Backend:** Follow standard Spring Boot conventions, use Lombok for boilerplate
-- **Frontend:** Use TypeScript strict mode, functional components with hooks
-- **Commits:** Use [Conventional Commits](https://www.conventionalcommits.org/) format
+
 
 ---
 
-## 📄 License
 
-This project is for educational and demonstration purposes.
-
----
-
-<p align="center">
-  Built with ❤️ using Spring Boot, React, and a microservices-first approach.
-</p>
